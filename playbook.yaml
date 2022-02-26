@@ -1,0 +1,280 @@
+---
+- hosts: all
+
+  gather_facts: true
+
+  vars:
+    home_dir: '/home/{{ ssh_user }}'
+    node_type: '{{ vm_type }}'
+    zap_version: 'v2.11.0'
+    zap_file: 'ZAP_2.11.0'
+    upgrade_python: true
+    python_version: 'Python-3.9.8'
+    python_version_no: '3.9.8'
+
+  remote_user: '{{ ssh_user }}'
+
+  environment:
+    PATH: '{{ ansible_env.PATH }}:{{ home_dir }}/.local/bin'
+
+  tasks:
+    # ###########################################################################################
+    #                             Install Required Packages
+    # ###########################################################################################
+    - name: Remove python3 package.
+      apt:
+        name: python3
+        state: absent
+      become: yes
+      when: upgrade_python
+
+    - name: Install build essentials.
+      apt:
+        pkg:
+          - build-essential
+          - zlib1g-dev
+          - libncurses5-dev
+          - libgdbm-dev
+          - libnss3-dev
+          - libssl-dev
+          - libreadline-dev
+          - libffi-dev
+          - libsqlite3-dev
+          - wget
+          - libbz2-dev
+          - acl
+          - default-jre
+          - nginx
+        state: present
+      become: yes
+
+    - name: Download python3.9 From https://www.python.org/ftp/python/{{ python_version_no }}/{{ python_version }}.tgz.
+      get_url:
+        url: 'https://www.python.org/ftp/python/{{ python_version_no }}/{{ python_version }}.tgz'
+        dest: '{{ home_dir }}/'
+        mode: '0777'
+      when: upgrade_python
+
+    - name: unzip {{ python_version }}.tgz.
+      ansible.builtin.unarchive:
+        src: '{{ home_dir }}/{{ python_version }}.tgz'
+        dest: '{{ home_dir }}/'
+        remote_src: yes
+      when: upgrade_python
+
+    - name: run configure.
+      command: ./configure
+      args:
+        chdir: '{{ home_dir }}/{{ python_version }}/'
+      when: upgrade_python
+
+    - name: install {{ python_version }}.
+      command: make install
+      args:
+        chdir: '{{ home_dir }}/{{ python_version }}/'
+      become: yes
+      when: upgrade_python
+
+    # apt update
+    - name: apt update.
+      apt:
+        update_cache: yes
+      become: yes
+      when: upgrade_python
+
+    # install required apt packages and dependencies
+    - name: Install required apt packages and dependencies.
+      apt:
+        pkg:
+          - python3-pip
+        force_apt_get: true
+      become: yes
+
+    # Download ZAP_2.11.0
+    - name: Download ZAP_2.11.0
+      ansible.builtin.command: 'wget https://github.com/zaproxy/zaproxy/releases/download/{{ zap_version }}/{{ zap_file }}_Linux.tar.gz'
+    
+    # Unarchive {{ zap_file }}.tar.gz
+    - name: Unarchive {{ zap_file }}.tar.gz
+      ansible.builtin.unarchive:
+        src: '{{ home_dir }}/{{ zap_file }}_Linux.tar.gz'
+        dest: '{{ home_dir }}'
+        remote_src: yes
+
+    # Install required packages for script file
+    - name: Installing ray, ZAPv2, tldextract, python-dotenv
+      pip:
+        name:
+          - ray
+          - python-owasp-zap-v2.4
+          - tldextract
+          - python-dotenv
+        extra_args: -U
+
+    # ###########################################################################################
+    #                              Copy ray file, scan file, zedzap service file
+    # ###########################################################################################
+    - name: copy ray file
+      ansible.builtin.copy:
+        src: '{{ ray_file }}'
+        dest: '{{ home_dir }}/{{ ray_file }}'
+        mode: 0777
+
+    - name: copy scan file
+      ansible.builtin.copy:
+        src: '{{ scan_file }}'
+        dest: '{{ home_dir }}/{{ scan_file }}'
+        mode: 0777
+
+    - name: copy .env file
+      ansible.builtin.copy:
+        src: .env
+        dest: '{{ home_dir }}/.env'
+        mode: 0777
+
+    - name: copy zedzap service file
+      ansible.builtin.copy:
+        src: '{{ service_file }}'
+        dest: '/etc/systemd/system/zedzap.service'
+        mode: 0777
+      become: yes
+
+    # ###########################################################################################
+    #                              Enable zedzap service
+    # ###########################################################################################
+    - name: change service file zap folder path
+      ansible.builtin.replace:
+        path: '/etc/systemd/system/zedzap.service'
+        regexp: 'ZAP_PATH'
+        replace: '{{ home_dir }}/{{ zap_file }}'
+      become: yes
+
+    - name: enable {{ service_file }}
+      ansible.builtin.systemd:
+        name: zedzap
+        state: started
+        enabled: yes
+      become: yes
+
+    # ###########################################################################################
+    #                              Add nginx server
+    # ###########################################################################################
+    - name: openssl private key
+      openssl_privatekey:
+        path: /etc/nginx/server-cert.key
+        size: 2048
+      become: yes
+      when: node_type == "head"
+
+    - name: openssl csr
+      openssl_csr:
+        path: /etc/nginx/server-cert.csr
+        privatekey_path: /etc/nginx/server-cert.key
+      become: yes
+      when: node_type == "head"
+
+    - name: openssl certificate
+      openssl_certificate:
+        provider: selfsigned
+        path: /etc/nginx/server-cert.crt
+        privatekey_path: /etc/nginx/server-cert.key
+        csr_path: /etc/nginx/server-cert.csr
+      become: yes
+      when: node_type == "head"
+      
+
+    # create configuration file for reverse proxying to localhost:8265
+    - name: copy ray nginx config file
+      ansible.builtin.copy:
+        src: misc/ray
+        dest: /etc/nginx/sites-available/ray
+        mode: 0644
+      become: yes
+      when: node_type == "head"
+
+    - name: activate link between sites-available/ray sites-enabled
+      file:
+        src: /etc/nginx/sites-available/ray
+        dest: /etc/nginx/sites-enabled/ray
+        state: link
+      become: yes
+      when: node_type == "head"
+
+    - name: reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+        daemon_reload: yes
+        enabled: True
+      become: yes
+      when: node_type == "head"
+
+    # ###########################################################################################
+    #                              Run Ray as a service on all nodes
+    # ###########################################################################################
+    # copy ray service file to remote
+    #- name: copy ray service file
+    #  ansible.builtin.copy:
+    #    src: misc/ray.service
+    #    dest: '/etc/systemd/system/ray.service'
+    #    mode: 0777
+    #  become: yes
+
+    # change command of service file if head node
+    #- name: change command to 'ray start --head' if head node
+    #  ansible.builtin.replace:
+    #    path: '/etc/systemd/system/ray.service'
+    #    regexp: 'COMMAND'
+    #    replace: 'ray start --head'
+    #  become: yes
+    #  when: node_type == "head"
+
+    # change command of service file if worker node
+    #- name: change command to 'ray start --address={{ head_ip }}:6379 --redis-password=5241590000000000' if worker node
+    #  ansible.builtin.replace:
+    #    path: '/etc/systemd/system/ray.service'
+    #    regexp: 'COMMAND'
+    #    replace: 'ray start --address={{ head_ip }}:{{ ray_port }} --redis-password={{ ray_passwd }}'
+    #  become: yes
+    #  when: node_type == "worker"
+
+    # enable service
+    #- name: enable ray service
+    #  ansible.builtin.systemd:
+    #    name: ray
+    #    state: started
+    #    enabled: yes
+    #  become: yes
+
+    # ###########################################################################################
+    #                              Run Ray on head node
+    # ###########################################################################################
+    - name: Run Ray on head node | check for head node
+      shell: 
+        cmd: 'ray start --head --port={{ ray_port }} --include-dashboard=true'
+        chdir: '{{ home_dir }}'
+      register: head_ray
+      when: node_type == "head"
+
+    - name: head ray
+      debug:
+        var: head_ray.stdout_lines
+      when: node_type == "head"
+
+    # ###########################################################################################
+    #                              Connect workers to head node Ray
+    # ###########################################################################################
+    - name: Connect worker to head node Ray | check for worker node
+      shell: 
+        cmd: "ray start --address='{{ head_ip }}:6379' --redis-password='5241590000000000'"
+        chdir: '{{ home_dir }}'
+      register: worker_ray
+      when: node_type == "worker"
+
+    - name: worker ray
+      debug:
+        var: worker_ray.stdout_lines
+      when: node_type == "worker"
+
+    - name: setup finished
+      command: echo "setup finished"

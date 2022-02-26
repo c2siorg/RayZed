@@ -1,0 +1,9 @@
+[Unit]
+Description=Ray as a system service.
+
+[Service]
+Type=simple
+ExecStart=COMMAND
+
+[Install]
+WantedBy=multi-user.target
