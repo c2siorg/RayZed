@@ -3,7 +3,7 @@ Description=ZED ZAP daemon
 After=network.target
 
 [Service]
-ExecStart=/bin/bash /home/local/QCRI/rdesilva/ZAP_2.11.0/zap.sh -daemon -config api.key=api-199502062021 -port 8181
+ExecStart=/bin/bash ZAP_PATH/zap.sh -daemon -config api.key=api-199502062021 -port 8181
 
 [Install]
 WantedBy=multi-user.target
