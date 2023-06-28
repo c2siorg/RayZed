@@ -25,6 +25,9 @@ targets.
 5. NGINX: For reverse proxying
 6. GCP: Google Cloud Platform to provide service of the virtual machine and firewall.
 
+## Zed Optimization Survey
+[Documentation Link](https://docs.google.com/document/d/1j10LrdNFHic8l0VE-8o0wIziROTtdShs2HFSZ6Xkcog/edit?usp=sharing)
+
 ## Folder Structure
 ```
 .
